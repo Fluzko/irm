@@ -2,6 +2,8 @@
 
 This is a terminal-based interactive file and directory remover application. It allows you to navigate through your directory structure, select files or directories, and remove them using a terminal user interface (TUI).
 
+![irm](./assets/demo.gif)
+
 ## Features
 
 - **Navigate**: Move up and down through directories and files.
