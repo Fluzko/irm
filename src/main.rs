@@ -355,7 +355,7 @@ impl App {
             " Select: ".into(),
             "<Space>".blue().bold(),
             " Remove all: ".into(),
-            "<Shift + R> ".red().bold(),
+            "<Ctrl + R> ".red().bold(),
             "Remove: ".into(),
             "<R> ".red().bold(),
             " Quit: ".into(),
