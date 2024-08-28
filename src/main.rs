@@ -27,7 +27,7 @@ enum DirType {
     Symlink,
 }
 
-type NodeRef = Rc<Node>;
+type NodeRef = Rc<RefCell<Node>>;
 
 type Depth = usize;
 type IsLastOfFolder = bool;
@@ -49,7 +49,7 @@ impl DirTree {
 
     fn to_array(&self) -> Vec<String> {
         let mut array = Vec::new();
-        self.base_node.to_array(&mut array);
+        self.base_node.borrow().to_array(&mut array);
         array
     }
 
@@ -61,9 +61,10 @@ impl DirTree {
         }
 
         for name in path.replace("./", "").split('/') {
-            let _node = node.clone();
+            let cloned = node.clone();
+            let _node = cloned.borrow();
             let children = _node.children.borrow();
-            let child = children.iter().find(|c| c.name == name);
+            let child = children.iter().find(|c| c.borrow().name == name);
 
             if let Some(child) = child {
                 node = child.clone();
@@ -75,7 +76,8 @@ impl DirTree {
     }
 
     fn remove_node(&self, path: &str) {
-        let node = self.find_node(path).unwrap().clone();
+        let found = self.find_node(path).unwrap().clone();
+        let node = found.borrow();
         let parent = node.parent.borrow();
 
         if parent.upgrade().is_none() {
@@ -84,9 +86,10 @@ impl DirTree {
         parent
             .upgrade()
             .unwrap()
+            .borrow()
             .children
             .borrow_mut()
-            .retain(|c| c.name != node.name);
+            .retain(|c| c.borrow().name != node.name);
 
         match node.type_ {
             DirType::Dir => fs::remove_dir_all(node.full_path()).unwrap(),
@@ -98,6 +101,7 @@ impl DirTree {
     fn to_enriched_array(&self, selected_nodes: &Vec<NodeRef>) -> Vec<TupleNode> {
         let mut items = Vec::new();
         self.base_node
+            .borrow()
             .to_enriched_array(&mut items, selected_nodes, 0, false);
         items
     }
@@ -107,27 +111,28 @@ impl DirTree {
 struct Node {
     name: String,
     type_: DirType,
-    parent: RefCell<Weak<Node>>,
+    parent: RefCell<Weak<RefCell<Node>>>,
     children: RefCell<Vec<NodeRef>>,
 }
 
 impl Node {
     fn new(name: String, type_: DirType) -> NodeRef {
-        Rc::new(Node {
+        Rc::new(RefCell::new(Node {
             name,
             type_,
             parent: RefCell::new(Weak::new()),
             children: RefCell::new(Vec::new()),
-        })
+        }))
     }
 
-    fn add_child(parent: Rc<Node>, child: NodeRef) {
-        parent.children.borrow_mut().push(child.clone());
-        *child.parent.borrow_mut() = Rc::downgrade(&parent);
+    fn add_child(parent: NodeRef, child: NodeRef) {
+        parent.borrow().children.borrow_mut().push(child.clone());
+
+        child.borrow().parent.replace(Rc::downgrade(&parent));
     }
 
     fn scan_dir(node: NodeRef) -> io::Result<()> {
-        let path = node.full_path();
+        let path = node.borrow().full_path();
 
         let entries = fs::read_dir(path)?;
 
@@ -157,7 +162,7 @@ impl Node {
             parent if parent.upgrade().is_none() => self.name.clone(),
             parent => {
                 let parent = parent.upgrade().unwrap();
-                let parent_path = parent.full_path();
+                let parent_path = parent.borrow().full_path();
                 format!("{}/{}", parent_path, self.name)
             }
         }
@@ -167,7 +172,7 @@ impl Node {
         let full_path = self.full_path();
         array.push(full_path);
         for child in self.children.borrow().iter() {
-            child.to_array(array);
+            child.borrow().to_array(array);
         }
     }
 
@@ -175,13 +180,13 @@ impl Node {
         let parent = self.parent.borrow();
         match parent.upgrade() {
             None => false,
-            Some(parent) => parent.is_selected(selected_nodes),
+            Some(parent) => parent.borrow().is_selected(selected_nodes),
         }
     }
 
     fn is_selected(&self, selected_nodes: &[NodeRef]) -> bool {
         selected_nodes.iter().any(|node| {
-            node.full_path() == self.full_path() || self.is_parent_selected(selected_nodes)
+            node.borrow().full_path() == self.full_path() || self.is_parent_selected(selected_nodes)
         })
     }
 
@@ -206,7 +211,9 @@ impl Node {
 
         for (i, child) in children.borrow().iter().enumerate() {
             let is_last = i == len - 1;
-            child.to_enriched_array(items, selected_nodes, depth + 1, is_last);
+            child
+                .borrow()
+                .to_enriched_array(items, selected_nodes, depth + 1, is_last);
         }
     }
 }
@@ -249,7 +256,7 @@ impl App {
             KeyCode::Char(' ') => self.handle_select_dir(),
             KeyCode::Up => self.handle_hover_up(),
             KeyCode::Down => self.handle_hover_down(),
-            KeyCode::Enter => self.handle_open_dir(),
+            KeyCode::Enter => self.handle_toggle_dir(),
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.handle_clear_all()
             }
@@ -281,20 +288,26 @@ impl App {
         let node_path = arr[idx].clone();
         let node = self.dir_tree.find_node(&node_path).unwrap();
 
-        if self.selected.iter().any(|x| x.full_path() == node_path) {
-            self.selected.retain(|x| x.full_path() != node_path);
+        if self
+            .selected
+            .iter()
+            .any(|x| x.borrow().full_path() == node_path)
+        {
+            self.selected
+                .retain(|x| x.borrow().full_path() != node_path);
         } else {
             self.selected.push(node);
         }
     }
 
-    fn handle_open_dir(&mut self) {
+    fn handle_toggle_dir(&mut self) {
         let arr = self.dir_tree.to_array();
         let idx = self.hovered.selected().unwrap();
         let node_path = arr[idx].clone();
         let node = self.dir_tree.find_node(&node_path).unwrap();
 
-        if node.children.borrow().is_empty() && node.type_ == DirType::Dir {
+        let borrowed = node.borrow();
+        if borrowed.children.borrow().is_empty() && borrowed.type_ == DirType::Dir {
             Node::scan_dir(node.clone()).unwrap();
         }
     }
@@ -338,7 +351,7 @@ impl App {
 
     fn handle_clear_all(&mut self) {
         self.selected.iter().for_each(|node| {
-            self.dir_tree.remove_node(&node.full_path());
+            self.dir_tree.remove_node(&node.borrow().full_path());
         });
     }
 }
