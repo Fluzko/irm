@@ -111,6 +111,7 @@ impl DirTree {
 struct Node {
     name: String,
     type_: DirType,
+    is_open: bool,
     parent: RefCell<Weak<RefCell<Node>>>,
     children: RefCell<Vec<NodeRef>>,
 }
@@ -120,6 +121,7 @@ impl Node {
         Rc::new(RefCell::new(Node {
             name,
             type_,
+            is_open: false,
             parent: RefCell::new(Weak::new()),
             children: RefCell::new(Vec::new()),
         }))
@@ -211,10 +213,17 @@ impl Node {
 
         for (i, child) in children.borrow().iter().enumerate() {
             let is_last = i == len - 1;
-            child
-                .borrow()
-                .to_enriched_array(items, selected_nodes, depth + 1, is_last);
+            if self.is_open {
+                child
+                    .borrow()
+                    .to_enriched_array(items, selected_nodes, depth + 1, is_last);
+            }
         }
+    }
+
+    fn toggle_open(node: NodeRef) {
+        let mut mut_node = node.borrow_mut();
+        mut_node.is_open = !mut_node.is_open;
     }
 }
 
@@ -305,6 +314,8 @@ impl App {
         let idx = self.hovered.selected().unwrap();
         let node_path = arr[idx].clone();
         let node = self.dir_tree.find_node(&node_path).unwrap();
+
+        Node::toggle_open(node.clone());
 
         let borrowed = node.borrow();
         if borrowed.children.borrow().is_empty() && borrowed.type_ == DirType::Dir {
